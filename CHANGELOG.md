@@ -6,6 +6,8 @@
   toute création. Si R2 n’est pas activé, rien n’est créé. Un bucket R2 déjà
   créé est réutilisé.
 
+- `init` réutilise une base D1 existante au lieu de la supprimer.
+
 ## 0.1.1 — 2026-10-16
 
 - `doctor` : un domaine redirigé vers un autre domaine du site (ex.

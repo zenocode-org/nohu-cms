@@ -406,6 +406,37 @@ describe('init : accès D1 et R2', () => {
     expect(calls.indexOf('wrangler r2 bucket list')).toBeLessThan(createAt);
   });
 
+  it('réutilise uniquement la base D1 dont le nom correspond exactement', async () => {
+    const dir = astroProject();
+    const calls: string[] = [];
+    const existingId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    await init({
+      cwd: dir,
+      deps: {
+        ask: answers('Mon Site', 'mon-site', 'exemple.fr', 'a@b.fr', ''),
+        exec: (_command, args) => {
+          calls.push(args.join(' '));
+          if (args[1] === 'whoami') return account;
+          if (args[1] === 'd1' && args[2] === 'list')
+            return JSON.stringify([
+              {
+                name: 'mon-site-cms-old',
+                uuid: '11111111-2222-4333-8444-555555555555',
+              },
+              { name: 'mon-site-cms', uuid: existingId },
+            ]);
+          if (args[1] === 'd1' && args[2] === 'execute')
+            return args.includes('--json') ? '[{"results": []}]' : '';
+          return '';
+        },
+        log: () => {},
+      },
+    });
+    expect(calls).not.toContain('wrangler d1 create mon-site-cms');
+    expect(calls.some((call) => call.includes('d1 delete'))).toBe(false);
+    expect(readWranglerConfig(dir).databaseId).toBe(existingId);
+  });
+
   it('utilise le compte choisi pour chaque commande wrangler', async () => {
     const dir = astroProject();
     const environments: NodeJS.ProcessEnv[] = [];

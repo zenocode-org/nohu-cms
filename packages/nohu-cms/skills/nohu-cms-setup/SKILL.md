@@ -42,6 +42,9 @@ migrations, puis affiche les **étapes restantes** (Access si pas de jeton,
 connexion du dépôt à Workers Builds, secret de build `CMS_API_TOKEN`, deploy
 hook). Recopier ces étapes à l'utilisateur sous forme de checklist.
 
+Si une base D1 de ce nom existe déjà, la commande la réutilise et écrit son
+identifiant dans `wrangler.jsonc`. Un bucket R2 existant est réutilisé aussi.
+
 Si `wrangler.jsonc` existe déjà (site déjà sur Cloudflare), `init` le
 complète (copie de l'original : `wrangler.jsonc.avant-nohu-cms`) et signale un
 point d'entrée Worker existant à adapter avec `createCmsWorker(config, { fetch })`.

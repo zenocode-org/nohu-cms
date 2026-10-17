@@ -117,11 +117,12 @@ function ensureD1AndR2Access(
   exec: InitDeps['exec'],
   log: InitDeps['log'],
   accountId: string,
-) {
+): string {
   log('• Vérification de l’accès D1 et de R2…');
   const problems: string[] = [];
+  let d1List = '';
   try {
-    exec('npx', ['wrangler', 'd1', 'list', '--json']);
+    d1List = exec('npx', ['wrangler', 'd1', 'list', '--json']);
   } catch (error) {
     problems.push(
       `D1 inaccessible avec cette session wrangler.\n${wranglerDetail(error)}\nRelance « npx wrangler login » avec un compte qui a le droit D1.`,
@@ -142,6 +143,7 @@ function ensureD1AndR2Access(
       `Vérification Cloudflare interrompue, rien n’a été créé.\n\n${problems.join('\n\n')}`,
     );
   }
+  return d1List;
 }
 
 function createBucket(
@@ -210,6 +212,52 @@ async function cloudflare<T>(
   return payload.result;
 }
 
+/** Retourne l'identifiant exact de la base trouvée dans le JSON de Wrangler. */
+function databaseIdFromList(output: string, name: string): string | null {
+  try {
+    const databases = JSON.parse(output) as unknown;
+    if (!Array.isArray(databases)) return null;
+    const database = databases.find(
+      (item) =>
+        !!item &&
+        typeof item === 'object' &&
+        (item as { name?: unknown }).name === name,
+    ) as { uuid?: unknown } | undefined;
+    return typeof database?.uuid === 'string' ? database.uuid : null;
+  } catch {
+    return null;
+  }
+}
+
+function provisionDatabase(
+  deps: InitDeps,
+  workerName: string,
+  d1List: string,
+): string {
+  const dbName = databaseName(workerName);
+  const existingId = databaseIdFromList(d1List, dbName);
+  if (existingId) {
+    deps.log(`• Base D1 « ${dbName} » déjà existante, réutilisée.`);
+    return existingId;
+  }
+  deps.log(`• Création de la base D1 « ${dbName} »…`);
+  let created: string;
+  try {
+    created = deps.exec('npx', ['wrangler', 'd1', 'create', dbName]);
+  } catch (error) {
+    throw new Error(
+      `Création de la base D1 « ${dbName} » impossible.\n${wranglerDetail(error)}`,
+    );
+  }
+  const id = created.match(UUID)?.[0];
+  if (!id) {
+    throw new Error(
+      `Identifiant de la base introuvable dans la réponse de wrangler :\n${created}`,
+    );
+  }
+  return id;
+}
+
 export async function init(options: InitOptions = {}) {
   const cwd = options.cwd ?? process.cwd();
   const deps = { ...defaultDeps(cwd), ...options.deps };
@@ -223,6 +271,7 @@ export async function init(options: InitOptions = {}) {
 async function run(cwd: string, deps: InitDeps, dryRun: boolean) {
   const { log } = deps;
   const todo: string[] = [];
+  let d1List = '[]';
 
   // 1. Projet Astro
   const { name: packageName, pkg } = readPackageName(cwd);
@@ -272,7 +321,7 @@ async function run(cwd: string, deps: InitDeps, dryRun: boolean) {
       runWrangler(command, args, {
         env: { CLOUDFLARE_ACCOUNT_ID: accountId },
       });
-    ensureD1AndR2Access(cloudflareExec, log, accountId);
+    d1List = ensureD1AndR2Access(cloudflareExec, log, accountId);
 
     // Les migrations passent aussi par wrangler après l'écriture de la config.
     deps.exec = cloudflareExec;
@@ -322,20 +371,7 @@ async function run(cwd: string, deps: InitDeps, dryRun: boolean) {
     log(`• créerait le stockage R2 « ${bucketName(name)} »`);
   } else {
     createBucket(deps.exec, log, bucketName(name));
-    log(`• Création de la base D1 « ${databaseName(name)} »…`);
-    const created = deps.exec('npx', [
-      'wrangler',
-      'd1',
-      'create',
-      databaseName(name),
-    ]);
-    const id = created.match(UUID)?.[0];
-    if (!id) {
-      throw new Error(
-        `Identifiant de la base introuvable dans la réponse de wrangler :\n${created}`,
-      );
-    }
-    site.databaseId = id;
+    site.databaseId = provisionDatabase(deps, name, d1List);
   }
 
   // 5. Cloudflare Access
