@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — non publiée
 
-- `init` : vérifier l’accès D1 et l’activation de R2 avant les questions et
-  avant toute création. Si R2 n’est pas activé, rien n’est créé.
+- `init` vérifie l’accès D1 et l’activation de R2 avant les questions et avant
+  toute création. Si R2 n’est pas activé, rien n’est créé. Un bucket R2 déjà
+  créé est réutilisé.
 
 ## 0.1.1 — 2026-10-16
 

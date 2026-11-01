@@ -406,6 +406,93 @@ describe('init : accès D1 et R2', () => {
     expect(calls.indexOf('wrangler r2 bucket list')).toBeLessThan(createAt);
   });
 
+  it('utilise le compte choisi pour chaque commande wrangler', async () => {
+    const dir = astroProject();
+    const environments: NodeJS.ProcessEnv[] = [];
+    const first = '0123456789abcdef0123456789abcdef';
+    const selected = 'fedcba9876543210fedcba9876543210';
+    await init({
+      cwd: dir,
+      deps: {
+        ask: answers(
+          selected,
+          'Mon Site',
+          'mon-site',
+          'exemple.fr',
+          'a@b.fr',
+          '',
+        ),
+        exec: (_command, args, options) => {
+          if (args[1] !== 'whoami') environments.push(options?.env ?? {});
+          if (args[1] === 'whoami')
+            return `│ Un │ ${first} │\n│ Deux │ ${selected} │`;
+          if (args[1] === 'd1' && args[2] === 'create')
+            return '"database_id": "11111111-2222-4333-8444-555555555555"';
+          if (args[1] === 'd1' && args[2] === 'execute')
+            return args.includes('--json') ? '[{"results": []}]' : '';
+          return '';
+        },
+        log: () => {},
+      },
+    });
+    expect(environments.length).toBeGreaterThan(0);
+    expect(environments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ CLOUDFLARE_ACCOUNT_ID: selected }),
+      ]),
+    );
+    expect(
+      environments.every((env) => env.CLOUDFLARE_ACCOUNT_ID === selected),
+    ).toBe(true);
+  });
+
+  it('réutilise un bucket existant avant de créer D1', async () => {
+    const dir = astroProject();
+    const calls: string[] = [];
+    await init({
+      cwd: dir,
+      deps: {
+        ask: answers('Mon Site', 'mon-site', 'exemple.fr', 'a@b.fr', ''),
+        exec: (_command, args) => {
+          calls.push(args.join(' '));
+          if (args[1] === 'whoami') return account;
+          if (args[1] === 'r2' && args[3] === 'create')
+            throw failed('Bucket already exists [code: 10073]');
+          if (args[1] === 'd1' && args[2] === 'create')
+            return '"database_id": "11111111-2222-4333-8444-555555555555"';
+          if (args[1] === 'd1' && args[2] === 'execute')
+            return args.includes('--json') ? '[{"results": []}]' : '';
+          return '';
+        },
+        log: () => {},
+      },
+    });
+    expect(calls).toContain('wrangler r2 bucket create mon-site-media');
+    expect(calls).toContain('wrangler d1 create mon-site-cms');
+  });
+
+  it('ne crée pas D1 si le bucket R2 ne peut pas être créé', async () => {
+    const dir = astroProject();
+    const calls: string[] = [];
+    await expect(
+      init({
+        cwd: dir,
+        deps: {
+          ask: answers('Mon Site', 'mon-site', 'exemple.fr', 'a@b.fr', ''),
+          exec: (_command, args) => {
+            calls.push(args.join(' '));
+            if (args[1] === 'whoami') return account;
+            if (args[1] === 'r2' && args[3] === 'create')
+              throw failed('Access denied [code: 10003]');
+            return '';
+          },
+          log: () => {},
+        },
+      }),
+    ).rejects.toThrow(/Access denied/);
+    expect(calls).not.toContain('wrangler d1 create mon-site-cms');
+  });
+
   it('s’arrête avant les questions si D1 est inaccessible', async () => {
     const dir = astroProject();
     const calls: string[] = [];

@@ -19,7 +19,7 @@ import {
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { slugify } from '../config';
-import { wranglerClient, type Exec } from '../content/d1';
+import { wranglerClient } from '../content/d1';
 import { parseJsonc } from '../content/jsonc';
 import { migrate } from '../content/migrate';
 import type { WranglerFile } from '../content/wrangler';
@@ -40,7 +40,11 @@ import {
 export interface InitDeps {
   ask: (question: string, fallback?: string) => Promise<string>;
   /** Lance une commande et renvoie sa sortie. */
-  exec: Exec;
+  exec: (
+    command: string,
+    args: string[],
+    options?: { env?: NodeJS.ProcessEnv },
+  ) => string;
   fetch: typeof fetch;
   log: (message: string) => void;
 }
@@ -90,11 +94,12 @@ function defaultDeps(cwd: string): InitDeps & { close: () => void } {
   return {
     ask: prompt.ask,
     close: prompt.close,
-    exec: (command, args) =>
+    exec: (command, args, options) =>
       execFileSync(command, args, {
         cwd,
         encoding: 'utf8',
         stdio: ['inherit', 'pipe', 'pipe'],
+        env: { ...process.env, ...options?.env },
       }),
     fetch,
     log: (message) => console.info(message),
@@ -103,42 +108,31 @@ function defaultDeps(cwd: string): InitDeps & { close: () => void } {
 
 function wranglerDetail(error: unknown): string {
   if (!error || typeof error !== 'object') return String(error);
-  const failed = error as {
-    stdout?: unknown;
-    stderr?: unknown;
-    message?: unknown;
-  };
-  const text = [failed.stdout, failed.stderr]
-    .map((part) =>
-      typeof part === 'string'
-        ? part
-        : part instanceof Uint8Array
-          ? new TextDecoder().decode(part)
-          : '',
-    )
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-  return text || String(failed.message ?? error);
+  const failed = error as { stderr?: string; message?: string };
+  return (failed.stderr || failed.message || String(error)).split('\n')[0];
 }
 
 /** Liste D1 et buckets R2 : échoue avant de créer quoi que ce soit. */
-function ensureD1AndR2Access(deps: InitDeps, accountId: string) {
-  deps.log('• Vérification de l’accès D1 et de R2…');
+function ensureD1AndR2Access(
+  exec: InitDeps['exec'],
+  log: InitDeps['log'],
+  accountId: string,
+) {
+  log('• Vérification de l’accès D1 et de R2…');
   const problems: string[] = [];
   try {
-    deps.exec('npx', ['wrangler', 'd1', 'list', '--json']);
+    exec('npx', ['wrangler', 'd1', 'list', '--json']);
   } catch (error) {
     problems.push(
       `D1 inaccessible avec cette session wrangler.\n${wranglerDetail(error)}\nRelance « npx wrangler login » avec un compte qui a le droit D1.`,
     );
   }
   try {
-    deps.exec('npx', ['wrangler', 'r2', 'bucket', 'list']);
+    exec('npx', ['wrangler', 'r2', 'bucket', 'list']);
   } catch (error) {
     const detail = wranglerDetail(error);
     problems.push(
-      /10042|enable R2/i.test(detail)
+      /code:\s*10042|enable R2/i.test(detail)
         ? `R2 n’est pas activé sur ce compte. Active-le : https://dash.cloudflare.com/${accountId}/r2\nPuis relance npx nohu-cms init.\n${detail}`
         : `R2 inaccessible avec cette session wrangler.\n${detail}`,
     );
@@ -146,6 +140,25 @@ function ensureD1AndR2Access(deps: InitDeps, accountId: string) {
   if (problems.length) {
     throw new Error(
       `Vérification Cloudflare interrompue, rien n’a été créé.\n\n${problems.join('\n\n')}`,
+    );
+  }
+}
+
+function createBucket(
+  exec: InitDeps['exec'],
+  log: InitDeps['log'],
+  name: string,
+) {
+  log(`• Création du stockage R2 « ${name} »…`);
+  try {
+    exec('npx', ['wrangler', 'r2', 'bucket', 'create', name]);
+  } catch (error) {
+    if (/already exists|code:\s*10073/i.test(wranglerDetail(error))) {
+      log(`• Stockage R2 « ${name} » déjà existant, réutilisé.`);
+      return;
+    }
+    throw new Error(
+      `Création du stockage R2 « ${name} » impossible.\n${wranglerDetail(error)}`,
     );
   }
 }
@@ -254,7 +267,15 @@ async function run(cwd: string, deps: InitDeps, dryRun: boolean) {
             `Plusieurs comptes Cloudflare (${accounts.join(', ')}). Account ID à utiliser`,
             accounts[0],
           );
-    ensureD1AndR2Access(deps, accountId);
+    const runWrangler = deps.exec;
+    const cloudflareExec: InitDeps['exec'] = (command, args) =>
+      runWrangler(command, args, {
+        env: { CLOUDFLARE_ACCOUNT_ID: accountId },
+      });
+    ensureD1AndR2Access(cloudflareExec, log, accountId);
+
+    // Les migrations passent aussi par wrangler après l'écriture de la config.
+    deps.exec = cloudflareExec;
   }
 
   // 3. Questions
@@ -300,6 +321,7 @@ async function run(cwd: string, deps: InitDeps, dryRun: boolean) {
     log(`• créerait la base D1 « ${databaseName(name)} »`);
     log(`• créerait le stockage R2 « ${bucketName(name)} »`);
   } else {
+    createBucket(deps.exec, log, bucketName(name));
     log(`• Création de la base D1 « ${databaseName(name)} »…`);
     const created = deps.exec('npx', [
       'wrangler',
@@ -314,8 +336,6 @@ async function run(cwd: string, deps: InitDeps, dryRun: boolean) {
       );
     }
     site.databaseId = id;
-    log(`• Création du stockage R2 « ${bucketName(name)} »…`);
-    deps.exec('npx', ['wrangler', 'r2', 'bucket', 'create', bucketName(name)]);
   }
 
   // 5. Cloudflare Access
